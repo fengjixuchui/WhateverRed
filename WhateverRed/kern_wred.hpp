@@ -9,12 +9,12 @@
 #include <IOKit/pci/IOPCIDevice.h>
 
 enum struct ASICType {
+    Unknown,
     Raven,
     Raven2,
     Picasso,
     Renoir,
     GreenSardine,
-    Unknown,
 };
 
 // Hack
@@ -69,12 +69,12 @@ class WRed {
     static const char *getASICName() {
         PANIC_COND(callbackWRed->asicType == ASICType::Unknown, "wred", "Unknown ASIC type");
         static const char *asicNames[] = {"raven", "raven2", "picasso", "renoir", "green_sardine"};
-        return asicNames[static_cast<int>(callbackWRed->asicType)];
+        return asicNames[static_cast<int>(callbackWRed->asicType) - 1];
     }
 
-    bool getVBIOSFromVFCT(IOPCIDevice *provider) {
+    bool getVBIOSFromVFCT(IOPCIDevice *obj) {
         DBGLOG("wred", "Fetching VBIOS from VFCT table");
-        auto *expert = reinterpret_cast<AppleACPIPlatformExpert *>(provider->getPlatform());
+        auto *expert = reinterpret_cast<AppleACPIPlatformExpert *>(obj->getPlatform());
         PANIC_COND(!expert, "wred", "Failed to get AppleACPIPlatformExpert");
 
         auto *vfctData = expert->getACPITableData("VFCT", 0);
@@ -105,17 +105,17 @@ class WRed {
 
             offset += sizeof(GOPVideoBIOSHeader) + vHdr->imageLength;
 
-            if (vHdr->imageLength && vHdr->pciBus == provider->getBusNumber() &&
-                vHdr->pciDevice == provider->getDeviceNumber() && vHdr->pciFunction == provider->getFunctionNumber() &&
-                vHdr->vendorID == provider->configRead16(kIOPCIConfigVendorID) &&
-                vHdr->deviceID == provider->configRead16(kIOPCIConfigDeviceID)) {
+            if (vHdr->imageLength && vHdr->pciBus == obj->getBusNumber() && vHdr->pciDevice == obj->getDeviceNumber() &&
+                vHdr->pciFunction == obj->getFunctionNumber() &&
+                vHdr->vendorID == obj->configRead16(kIOPCIConfigVendorID) &&
+                vHdr->deviceID == obj->configRead16(kIOPCIConfigDeviceID)) {
                 if (!checkAtomBios(vContent, vHdr->imageLength)) {
                     DBGLOG("wred", "VFCT VBIOS is not an ATOMBIOS");
                     return false;
                 }
                 this->vbiosData = OSData::withBytes(vContent, vHdr->imageLength);
                 PANIC_COND(!this->vbiosData, "wred", "VFCT OSData::withBytes failed");
-                provider->setProperty("ATY,bin_image", this->vbiosData);
+                obj->setProperty("ATY,bin_image", this->vbiosData);
                 return true;
             }
         }
@@ -145,13 +145,24 @@ class WRed {
     }
 
     uint32_t readReg32(uint32_t reg) {
-        PANIC_COND((reg + 1) * 4 > callbackWRed->rmmio->getLength(), "wred", "RMMIO read out of bounds");
-        return reinterpret_cast<uint32_t *>(callbackWRed->rmmio->getVirtualAddress())[reg];
+        if (reg * 4 < this->rmmio->getLength()) {
+            return this->rmmioPtr[reg];
+        } else {
+            this->rmmioPtr[mmPCIE_INDEX2] = reg;
+            *(this->rmmioPtr + mmPCIE_INDEX2);
+            return this->rmmioPtr[mmPCIE_DATA2];
+        }
     }
 
     void writeReg32(uint32_t reg, uint32_t val) {
-        PANIC_COND((reg + 1) * 4 > callbackWRed->rmmio->getLength(), "wred", "RMMIO write out of bounds");
-        reinterpret_cast<uint32_t *>(callbackWRed->rmmio->getVirtualAddress())[reg] = val;
+        if (reg * 4 < this->rmmio->getLength()) {
+            this->rmmioPtr[reg] = val;
+        } else {
+            this->rmmioPtr[mmPCIE_INDEX2] = reg;
+            *(this->rmmioPtr + mmPCIE_INDEX2);
+            this->rmmioPtr[mmPCIE_DATA2] = val;
+            *(this->rmmioPtr + mmPCIE_DATA2);
+        }
     }
 
     uint32_t readSmcVersion() {
@@ -183,14 +194,14 @@ class WRed {
 
         if (jt) {
             jt->addr = fwHeader->jtOff;
-            jt->size = fwHeader->jtSize * 4;
-            jt->data = fwDesc.data + fwHeader->ucodeOff + (fwHeader->ucodeSize - (fwHeader->jtSize * 4));
+            jt->size = fwHeader->jtSize;
+            jt->data = fwDesc.data + fwHeader->ucodeOff + fwHeader->jtOff;
             DBGLOG("wred", "Injected %s <jt>!", filename);
         }
     }
 
-    inline const char *rlcFilenameToLoad(IOPCIDevice *provider) {
-        uint8_t rev = provider->configRead8(kIOPCIConfigRevisionID);
+    inline const char *rlcFilenameToLoad() {
+        uint8_t rev = videoBuiltin->configRead8(kIOPCIConfigRevisionID);
         switch (this->asicType) {
             case ASICType::Picasso:
                 if ((rev >= 0xC8 && rev <= 0xCF) || (rev >= 0xD8 && rev <= 0xDF)) { return "%s_rlc_am4.bin"; }
@@ -205,9 +216,11 @@ class WRed {
 
     OSData *vbiosData = nullptr;
     ASICType asicType = ASICType::Unknown;
-    void *callbackFirmwareDirectory = nullptr;
     uint64_t fbOffset {};
     IOMemoryMap *rmmio = nullptr;
+    volatile uint32_t *rmmioPtr = nullptr;
+    uint16_t enumeratedRevision {};
+    IOPCIDevice *videoBuiltin = nullptr;
 
     void *hwAlignMgr = nullptr;
     uint8_t *hwAlignMgrVtX5000 = nullptr;
@@ -278,14 +291,15 @@ class WRed {
 
     /** X6000Framebuffer */
     static IOReturn wrapPopulateDeviceInfo(void *that);
-    static uint16_t wrapGetEnumeratedRevision(void *that);
+    static uint16_t wrapGetEnumeratedRevision();
     static IOReturn wrapPopulateVramInfo(void *that, void *fwInfo);
     static uint32_t wrapHwReadReg32(void *that, uint32_t param1);
+    static void wrapDoGPUPanic();
 
     /** X5000HWLibs */
     static void wrapAmdTtlServicesConstructor(void *that, IOPCIDevice *provider);
     static uint32_t wrapSmuGetHwVersion();
-    static uint32_t wrapPspSwInit(uint32_t *param1, uint32_t *param2);
+    static uint32_t wrapPspSwInit(uint32_t *inputData, void *outputData);
     static uint32_t wrapGcGetHwVersion();
     static void wrapPopulateFirmwareDirectory(void *that);
     static void *wrapCreatePowerTuneServices(void *that, void *param2);
@@ -296,6 +310,7 @@ class WRed {
     static uint32_t wrapSmuRenoirInitialize(void *smum, uint32_t param2);
     static uint32_t wrapPspCmdKmSubmit(void *psp, void *ctx, void *param3, void *param4);
     static uint32_t hwLibsNoop();
+    static uint32_t hwLibsUnsupported();
 
     /** X6000 */
     static bool wrapAccelStartX6000();
