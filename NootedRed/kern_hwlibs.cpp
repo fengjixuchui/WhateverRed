@@ -21,11 +21,16 @@ void X5000HWLibs::init() {
 
 bool X5000HWLibs::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
     if (kextRadeonX5000HWLibs.loadIndex == index) {
+        NRed::callback->setRMMIOIfNecessary();
+
         CailAsicCapEntry *orgAsicCapsTable = nullptr;
         CailInitAsicCapEntry *orgAsicInitCapsTable = nullptr;
-        const void *goldenSettings[static_cast<uint32_t>(ChipType::Unknown)] = {nullptr};
-        const uint32_t *ddiCaps[static_cast<uint32_t>(ChipType::Unknown)] = {nullptr};
+        const void *goldenSettings[static_cast<uint32_t>(ChipType::Unknown) - 1] = {nullptr};
         CailDeviceTypeEntry *orgDeviceTypeTable = nullptr;
+        uint8_t *orgSmuFullAsicReset = nullptr;
+        DeviceCapabilityEntry *deviceCapabilityTbl = nullptr;
+        const void *swipInfo[3] = {nullptr}, *goldenRegisterSettings[3] = {nullptr};
+        const void *swipInfoMinimal = nullptr, *devDoorbellRangeNotSupported = nullptr;
 
         KernelPatcher::SolveRequest solveRequests[] = {
             {"__ZL15deviceTypeTable", orgDeviceTypeTable},
@@ -36,16 +41,22 @@ bool X5000HWLibs::processKext(KernelPatcher &patcher, size_t index, mach_vm_addr
             {"__ZL20CAIL_ASIC_CAPS_TABLE", orgAsicCapsTable},
             {"_CAILAsicCapsInitTable", orgAsicInitCapsTable},
             {"_Raven_SendMsgToSmc", this->orgRavenSendMsgToSmc},
-            {"_Renoir_SendMsgToSmc", this->orgRenoirSendMsgToSmc},
+            {"_Renoir_SendMsgToSmcWithParameter", this->orgRenoirSendMsgToSmcWithParameter},
             {"__ZN20AMDFirmwareDirectoryC1Ej", this->orgAMDFirmwareDirectoryConstructor},
-            {"_CAIL_DDI_CAPS_RAVEN_A0", ddiCaps[static_cast<uint32_t>(ChipType::Raven)]},
-            {"_CAIL_DDI_CAPS_RAVEN2_A0", ddiCaps[static_cast<uint32_t>(ChipType::Raven2)]},
-            {"_CAIL_DDI_CAPS_PICASSO_A0", ddiCaps[static_cast<uint32_t>(ChipType::Picasso)]},
-            {"_CAIL_DDI_CAPS_RENOIR_A0", ddiCaps[static_cast<uint32_t>(ChipType::Renoir)]},
             {"_RAVEN1_GoldenSettings_A0", goldenSettings[static_cast<uint32_t>(ChipType::Raven)]},
             {"_RAVEN2_GoldenSettings_A0", goldenSettings[static_cast<uint32_t>(ChipType::Raven2)]},
             {"_PICASSO_GoldenSettings_A0", goldenSettings[static_cast<uint32_t>(ChipType::Picasso)]},
             {"_RENOIR_GoldenSettings_A0", goldenSettings[static_cast<uint32_t>(ChipType::Renoir)]},
+            {"_smu_9_0_1_full_asic_reset", orgSmuFullAsicReset},
+            {"_DeviceCapabilityTbl", deviceCapabilityTbl},
+            {"_swipInfoRaven", swipInfo[0]},
+            {"_swipInfoRaven2", swipInfo[1]},
+            {"_swipInfoRenoir", swipInfo[2]},
+            {"_swipInfoMinimalInit", swipInfoMinimal},
+            {"_devDoorbellRangeNotSupported", devDoorbellRangeNotSupported},
+            {"_ravenGoldenRegisterSettings", goldenRegisterSettings[0]},
+            {"_raven2GoldenRegisterSettings", goldenRegisterSettings[1]},
+            {"_renoirGoldenRegisterSettings", goldenRegisterSettings[2]},
         };
         PANIC_COND(!patcher.solveMultiple(index, solveRequests, address, size), "hwlibs", "Failed to resolve symbols");
 
@@ -68,12 +79,13 @@ bool X5000HWLibs::processKext(KernelPatcher &patcher, size_t index, mach_vm_addr
             {"_SmuRaven_Initialize", wrapSmuRavenInitialize, this->orgSmuRavenInitialize},
             {"_SmuRenoir_Initialize", wrapSmuRenoirInitialize, this->orgSmuRenoirInitialize},
             {"_psp_cos_wait_for", wrapPspCosWaitFor, orgPspCosWaitFor},
-        };
-        PANIC_COND(!patcher.routeMultiple(index, requests, address, size), "hwlibs", "Failed to route symbols");
-
-        ddiCaps[static_cast<uint32_t>(ChipType::GreenSardine)] = ddiCaps[static_cast<uint32_t>(ChipType::Renoir)];
-        goldenSettings[static_cast<uint32_t>(ChipType::GreenSardine)] =
-            goldenSettings[static_cast<uint32_t>(ChipType::Renoir)];
+            {"_ttlDevSetAsicResetMode", wrapTtlDevSetAsicResetMode, orgTtlDevSetAsicResetMode},
+            {"_smu_9_0_1_full_asic_reset", hwLibsNoop},
+        };    // NOTE: IF YOU ADD A NEW WRAP, YOU WILL HAVE TO ADD IT BEFORE THE LINE ABOVE
+        auto count = arrsize(requests);
+        auto isRavenDerivative = NRed::callback->chipType < ChipType::Renoir;
+        if (!isRavenDerivative) { count--; }
+        PANIC_COND(!patcher.routeMultiple(index, requests, count, address, size), "hwlibs", "Failed to route symbols");
 
         PANIC_COND(MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS, "hwlibs",
             "Failed to enable kernel writing");
@@ -84,15 +96,27 @@ bool X5000HWLibs::processKext(KernelPatcher &patcher, size_t index, mach_vm_addr
         orgAsicInitCapsTable->emulatedRev = orgAsicCapsTable->emulatedRev =
             static_cast<uint32_t>(NRed::callback->enumeratedRevision) + NRed::callback->revision;
         orgAsicInitCapsTable->pciRev = orgAsicCapsTable->pciRev = 0xFFFFFFFF;
-        orgAsicInitCapsTable->caps = orgAsicCapsTable->caps = ddiCaps[static_cast<uint32_t>(NRed::callback->chipType)];
-        orgAsicInitCapsTable->goldenCaps = goldenSettings[static_cast<uint32_t>(NRed::callback->chipType)];
+        orgAsicInitCapsTable->caps = orgAsicCapsTable->caps = isRavenDerivative ? ddiCapsRaven : ddiCapsRenoir;
+        orgAsicInitCapsTable->goldenCaps =
+            goldenSettings[static_cast<uint32_t>(isRavenDerivative ? NRed::callback->chipType : ChipType::Renoir)];
+
+        deviceCapabilityTbl->familyId = AMDGPU_FAMILY_RAVEN;
+        deviceCapabilityTbl->deviceId = NRed::callback->deviceId;
+        deviceCapabilityTbl->internalRevision = deviceCapabilityTbl->externalRevision = DEVICE_CAP_ENTRY_REV_DONT_CARE;
+        auto capTblIndex = NRed::callback->chipType < ChipType::Raven2 ? 0 :
+                           NRed::callback->chipType < ChipType::Renoir ? 1 :
+                                                                         2;
+        deviceCapabilityTbl->swipInfo = swipInfo[capTblIndex];
+        deviceCapabilityTbl->swipInfoMinimal = swipInfoMinimal;
+        deviceCapabilityTbl->devAttrFlags = &ravenDevAttrFlags;
+        deviceCapabilityTbl->goldenRegisterSetings = goldenRegisterSettings[capTblIndex];
+        deviceCapabilityTbl->doorbellRange = devDoorbellRangeNotSupported;
         MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
         DBGLOG("hwlibs", "Applied DDI Caps patches");
 
-        KernelPatcher::LookupPatch patch = {&kextRadeonX5000HWLibs, kFullAsicResetPatched, kFullAsicResetOriginal,
-            arrsize(kFullAsicResetPatched), 1};
-        patcher.applyLookupPatch(&patch);
-        patcher.clearError();
+        PANIC_COND(!isRavenDerivative && !KernelPatcher::findAndReplace(orgSmuFullAsicReset, PAGE_SIZE,
+                                             kFullAsicResetOriginal, kFullAsicResetPatched),
+            "hwlibs", "Failed to patch _smu_9_0_1_full_asic_reset");
 
         return true;
     }
@@ -103,14 +127,9 @@ bool X5000HWLibs::processKext(KernelPatcher &patcher, size_t index, mach_vm_addr
 uint32_t X5000HWLibs::wrapSmuGetHwVersion() { return 0x1; }
 
 AMDReturn X5000HWLibs::wrapPspSwInit(uint32_t *inputData, void *outputData) {
-    if (NRed::callback->chipType < ChipType::Renoir) {
-        inputData[3] = 0x9;
-        inputData[5] = 0x2;
-    } else {
-        inputData[3] = 0xB;
-        inputData[5] = 0x0;
-    }
+    inputData[3] = 0x9;
     inputData[4] = 0x0;
+    inputData[5] = 0x2;
     auto ret = FunctionCast(wrapPspSwInit, callback->orgPspSwInit)(inputData, outputData);
     DBGLOG("hwlibs", "_psp_sw_init >> 0x%X", ret);
     return ret;
@@ -125,8 +144,8 @@ void X5000HWLibs::wrapPopulateFirmwareDirectory(void *that) {
     auto isRenoirDerivative = NRed::callback->chipType >= ChipType::Renoir;
     auto *filename = isRenoirDerivative ? "ativvaxy_nv.dat" : "ativvaxy_rv.dat";
     auto &fwDesc = getFWDescByName(filename);
-    uint32_t ipVersion = isRenoirDerivative ? 0x0202 : 0x0100;    // VCN 2.2, VCN 1.0
-    auto *fw = callback->orgCreateFirmware(fwDesc.data, fwDesc.size, ipVersion, filename);
+    /** VCN 2.2, VCN 1.0 */
+    auto *fw = callback->orgCreateFirmware(fwDesc.data, fwDesc.size, isRenoirDerivative ? 0x0202 : 0x0100, filename);
     PANIC_COND(!fw, "hwlibs", "Failed to create '%s' firmware", filename);
     DBGLOG("hwlibs", "Inserting %s!", filename);
     PANIC_COND(!callback->orgPutFirmware(fwDir, 0, fw), "hwlibs", "Failed to inject %s firmware", filename);
@@ -149,7 +168,7 @@ AMDReturn X5000HWLibs::wrapSmuRavenInitialize(void *smum, uint32_t param2) {
 
 AMDReturn X5000HWLibs::wrapSmuRenoirInitialize(void *smum, uint32_t param2) {
     auto ret = FunctionCast(wrapSmuRenoirInitialize, callback->orgSmuRenoirInitialize)(smum, param2);
-    callback->orgRenoirSendMsgToSmc(smum, PPSMC_MSG_PowerUpSdma);
+    callback->orgRenoirSendMsgToSmcWithParameter(smum, PPSMC_MSG_PowerUpSdma, 0);
     return ret;
 }
 
@@ -179,4 +198,9 @@ AMDReturn X5000HWLibs::wrapPspCmdKmSubmit(void *psp, void *ctx, void *param3, vo
 AMDReturn X5000HWLibs::wrapPspCosWaitFor(void *cos, uint64_t param2, uint64_t param3, uint64_t param4) {
     IOSleep(20);    // There might be a handshake issue with the hardware, requiring delay
     return FunctionCast(wrapPspCosWaitFor, callback->orgPspCosWaitFor)(cos, param2, param3, param4);
+}
+
+void X5000HWLibs::wrapTtlDevSetAsicResetMode(void *ttl, uint32_t mode) {
+    DBGLOG("hwlibs", "_ttlDevSetAsicResetMode << (ttl: %p mode: 0x%X)", ttl, mode);
+    FunctionCast(wrapTtlDevSetAsicResetMode, callback->orgTtlDevSetAsicResetMode)(ttl, 3);
 }

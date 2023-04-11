@@ -12,6 +12,7 @@ using t_createFirmware = void *(*)(const void *data, uint32_t size, uint32_t ipV
 using t_putFirmware = bool (*)(void *that, uint32_t deviceType, void *fw);
 using t_VegaXPowerTuneConstructor = void (*)(void *that, void *ppInstance, void *ppCallbacks);
 using t_sendMsgToSmc = uint32_t (*)(void *smum, uint32_t msgId);
+using t_sendMsgToSmcWithParameter = uint32_t (*)(void *smum, uint32_t msgId, uint32_t param);
 
 class X5000HWLibs {
     public:
@@ -26,11 +27,12 @@ class X5000HWLibs {
     t_putFirmware orgPutFirmware {nullptr};
     t_VegaXPowerTuneConstructor orgVega10PowerTuneConstructor {nullptr};
     t_sendMsgToSmc orgRavenSendMsgToSmc {nullptr};
-    t_sendMsgToSmc orgRenoirSendMsgToSmc {nullptr};
+    t_sendMsgToSmcWithParameter orgRenoirSendMsgToSmcWithParameter {nullptr};
     mach_vm_address_t orgSmuRavenInitialize {0};
     mach_vm_address_t orgSmuRenoirInitialize {0};
     mach_vm_address_t orgPspCmdKmSubmit {0};
     mach_vm_address_t orgPspCosWaitFor {0};
+    mach_vm_address_t orgTtlDevSetAsicResetMode {0};
 
     static uint32_t wrapSmuGetHwVersion();
     static AMDReturn wrapPspSwInit(uint32_t *inputData, void *outputData);
@@ -41,6 +43,7 @@ class X5000HWLibs {
     static AMDReturn wrapSmuRenoirInitialize(void *smum, uint32_t param2);
     static AMDReturn wrapPspCmdKmSubmit(void *psp, void *ctx, void *param3, void *param4);
     static AMDReturn wrapPspCosWaitFor(void *cos, uint64_t param2, uint64_t param3, uint64_t param4);
+    static void wrapTtlDevSetAsicResetMode(void *ttl, uint32_t mode);
     static AMDReturn hwLibsNoop();
     static AMDReturn hwLibsUnsupported();
 };

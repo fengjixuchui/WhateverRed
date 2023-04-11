@@ -21,8 +21,8 @@ class EXPORT PRODUCT_NAME : public IOService {
 
 enum struct ChipType : uint32_t {
     Raven = 0,
-    Raven2,
     Picasso,
+    Raven2,
     Renoir,
     GreenSardine,
     Unknown,
@@ -67,6 +67,32 @@ static bool checkAtomBios(const uint8_t *bios, size_t size) {
     return false;
 }
 
+/**
+ *  Console info structure, taken from osfmk/console/video_console.h
+ *  Last updated from XNU 4570.1.46.
+ */
+struct vc_info {
+    unsigned int v_height; /* pixels */
+    unsigned int v_width;  /* pixels */
+    unsigned int v_depth;
+    unsigned int v_rowbytes;
+    unsigned long v_baseaddr;
+    unsigned int v_type;
+    char v_name[32];
+    uint64_t v_physaddr;
+    unsigned int v_rows;         /* characters */
+    unsigned int v_columns;      /* characters */
+    unsigned int v_rowscanbytes; /* Actualy number of bytes used for display per row*/
+    unsigned int v_scale;
+    unsigned int v_rotate;
+    unsigned int v_reserved[3];
+};
+
+// This is a hack to let us access protected properties.
+struct FramebufferViewer : public IOFramebuffer {
+    static IOMemoryMap *&getVRAMMap(IOFramebuffer *fb) { return static_cast<FramebufferViewer *>(fb)->fVramMap; }
+};
+
 class NRed {
     friend class X6000FB;
     friend class X5000HWLibs;
@@ -78,6 +104,7 @@ class NRed {
 
     void init();
     void processPatcher(KernelPatcher &patcher);
+    void setRMMIOIfNecessary();
     void processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
 
     private:
@@ -149,13 +176,13 @@ class NRed {
         uint32_t size = 256 * 1024;    // ???
         if (!checkAtomBios(fb, size)) {
             DBGLOG("nred", "VRAM VBIOS is not an ATOMBIOS");
-            OSSafeReleaseNULL(bar0);
+            bar0->release();
             return false;
         }
         this->vbiosData = OSData::withBytes(fb, size);
         PANIC_COND(!this->vbiosData, "nred", "VRAM OSData::withBytes failed");
         provider->setProperty("ATY,bin_image", this->vbiosData);
-        OSSafeReleaseNULL(bar0);
+        bar0->release();
         return true;
     }
 
@@ -202,24 +229,21 @@ class NRed {
     uint16_t enumeratedRevision {0};
     uint16_t revision {0};
     IOPCIDevice *iGPU {nullptr};
-
-    void *hwAlignMgr {nullptr};
-    uint8_t *hwAlignMgrVtX5000 {nullptr};
-    uint8_t *hwAlignMgrVtX6000 {nullptr};
-
     OSMetaClass *metaClassMap[4][2] = {{nullptr}};
-
     mach_vm_address_t orgSafeMetaCast {0};
-    static OSMetaClassBase *wrapSafeMetaCast(const OSMetaClassBase *anObject, const OSMetaClass *toMeta);
-
     mach_vm_address_t orgApplePanelSetDisplay {0};
+    mach_vm_address_t orgCsValidatePage {0};
+    vc_info consoleVinfo {};
+    bool gotConsoleVinfo {false};
+    uint8_t *gIOFBVerboseBootPtr {nullptr};
+    mach_vm_address_t orgFramebufferInit {0};
 
+    static OSMetaClassBase *wrapSafeMetaCast(const OSMetaClassBase *anObject, const OSMetaClass *toMeta);
     static size_t wrapFunctionReturnZero();
     static bool wrapApplePanelSetDisplay(IOService *that, IODisplay *display);
-
-    mach_vm_address_t orgCsValidatePage {0};
     static void csValidatePage(vnode *vp, memory_object_t pager, memory_object_offset_t page_offset, const void *data,
         int *validated_p, int *tainted_p, int *nx_p);
+    static void wrapFramebufferInit(IOFramebuffer *fb);
 };
 
 #endif /* AMDRadeonX6000_hpp */

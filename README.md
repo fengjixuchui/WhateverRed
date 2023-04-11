@@ -1,31 +1,31 @@
 # NootedRed ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/NootInc/NootedRed/main.yml?branch=master&logo=github&style=for-the-badge)
 
-Through hard work come great results.
-
-An AMD iGPU support [Lilu](https://github.com/acidanthera/Lilu) (1.6.4+) plugin.
+The AMD Vega iGPU support [Lilu](https://github.com/acidanthera/Lilu) (1.6.4+) plugin.
 
 The Source Code of this Original Work is licensed under the `Thou Shalt Not Profit License version 1.0`. See [`LICENSE`](https://github.com/NootInc/NootedRed/blob/master/LICENSE)
 
-Thanks [Acidanthera](https://github.com/Acidanthera) for the AppleBacklight code and UnfairGVA patches in [WhateverGreen](https://github.com/Acidanthera/WhateverGreen).
+Thanks [Acidanthera](https://github.com/Acidanthera) for the AppleBacklight code, framebuffer init zero-fill fix, and UnfairGVA patches in [WhateverGreen](https://github.com/Acidanthera/WhateverGreen).
 
-**External websites NOT endorsed by us which mention and/or link to Noot and its projects include, but are not limited to,**
+## Boot arguments
 
-- tonymacx86.com,
-- technopat.net (technopat.net/sosyal),
-- and olarila.com.
+|  Boot Argument  |                              Description                              |
+|:---------------:|:---------------------------------------------------------------------:|
+| `-nredfbonly`   | Boot in FB-only macOS, without acceleration. May have visual glitches |
+| `-nreddmlogger` | Enable Display Core debugging output                                  |
+| `-nreddbg`      | Enable debugging output from kext and FB                              |
+| `-nredoff`      | Disable NootedRed                                                     |
 
-Reasons include, but are not limited to, large suspicion due to unrecommended methodology, techniques and methods of distribution, inappropriate behaviour, stealing work, lack of credits and lazy handling of hackintosh issues. We would recommend not supporting websites like those.
+## Prerequisites
 
-## Project members
-
-- [@ChefKissInc](https://github.com/ChefKissInc) | Project lead, Linux shitcode analyser and kernel extension developer. Extensive knowledge of OS inner workings
-- [@NyanCatTW1](https://github.com/NyanCatTW1) | Reverse Engineering and Python automation magician. His Ghidra RedMetaClassAnalyzer script has made the entire process way painless by automagically discovering C++ v-tables for classes.
+- Increase VRAM size otherwise the device will fail to initialise. 512MiB VRAM minimum. 1GiB or more for proper functionality
+- Disable Legacy Boot aka CSM, otherwise you will get a panic saying "Failed to get VBIOS from VRAM"
 
 ## Recommendations
 
-- Add [SSDT-PNLF.aml](Assets/SSDT-PNLF.aml) by [@ChefKissInc](https://github.com/ChefKissInc) and [@ExtremeXT](https://github.com/ExtremeXT) and compile and add [SSDT-ALS0.aml](https://github.com/Acidanthera/OpenCorePkg/blob/master/Docs/AcpiSamples/Source/SSDT-ALS0.dsl) (NOTE: only if you have no ambient light sensor) along with [SMCLightSensor.kext](https://github.com/Acidanthera/VirtualSMC) by [Acidanthera](https://github.com/Acidanthera) for backlight functionality (usually laptop-only).
-- Use `MacBookPro16,3`, `MacBookPro16,4` or `MacPro7,1` SMBIOS.
-- Add [AGPMInjector.kext](Assets/AGPMInjector.kext.zip) by [Visual](https://github.com/ChefKissInc). Supports only `MacBookPro16,3`, `MacBookPro16,4` or `MacPro7,1` SMBIOS
+- From this repository, add [`SSDT-PNLF.aml`](Assets/SSDT-PNLF.aml) and [`SSDT-ALS0.aml`](Assets/SSDT-ALS0.aml) if you have no Ambient Light Sensor, along with [`SMCLightSensor.kext`](https://github.com/Acidanthera/VirtualSMC) for backlight functionality. Usually only works on laptops. Add [`BrightnessKeys.kext`](https://github.com/Acidanthera/BrightnessKeys) for brightness control from the keyboard
+- Use `MacBookPro16,3`, `MacBookPro16,4` or `MacPro7,1` SMBIOS
+- Add our custom [`AGPMInjector.kext`](Assets/AGPMInjector.kext.zip) from this repository. Has definitions only for `MacBookPro16,3`, `MacBookPro16,4` and `MacPro7,1` SMBIOS
+- Update to latest macOS 11 (Big Sur) version
 
 ## FAQ
 
@@ -35,28 +35,18 @@ We are mixing AMDRadeonX5000 for GCN 5, AMDRadeonX6000 for VCN, and AMDRadeonX60
 
 ### How functional is the kext?
 
-This project is under active research and development; There will be crashes here and there, and it is incompatible with Renoir-based iGPUs (Like Cezanne, Lucienne, etc).
+This project is under active research and development; There will be crashes here and there, and full support for Renoir-based iGPUs (Like Cezanne, Lucienne, etc.) is a work in progress.
 
-The kext is fully functional more or less on Raven/Raven2-based iGPUs (Like Picasso).
+Renoir (Ryzen 4XXX series and newer) doesn't have graphics acceleration working yet (see [`Issue #11`](https://github.com/NootInc/NootedRed/issues/11) for details) but you can achieve "partial" acceleration by adding `-nredfbonly` to your boot-args.
+
+The kext is mostly fully functional on Picasso/Raven/Raven2-based iGPUs (Ryzen 3XXX series and older).
 
 See repository issues for more information.
 
 ### On which macOS versions am I able to use this on?
 
-Due to the complexity and secrecy of the Metal 2/3 drivers, adding support for non-existent logic is basically impossible.
+Due to the complexity and secrecy of the Metal drivers, adding support for non-existent logic is basically impossible. In addition, the required logic for our iGPUs has been purged from the AMD kexts since Monterey. This cannot be resolved without breaking macOS' integrity and potentially even stability.
 
-The required logic for our iGPUs has been purged from the AMD kexts since Monterey.
+Injecting the GPU kexts is not possible during the OpenCore injection stage; the prelink stage fails for kexts of this type since their dependencies aren't contained in the Boot Kext Collection, where OpenCore injects kexts to, they're in the System Kext Collection.
 
-This cannot be resolved without breaking macOS' integrity and potentially even stability.
-
-Injecting the GPU kexts is not possible during the OpenCore injection stage. The prelink stage fails for kexts of this type as their dependencies aren't contained in the Boot Kext Collection, where OpenCore injects kexts to, they're in the System Kext Collection.
-
-In conclusion, this kext is constricted to Big Sur since there are too many incompatibilities with older and newer macOS versions.
-
-### I get a panic saying "Failed to get VBIOS from VRAM", how can I fix this?
-
-Ensure Legacy Boot/CSM is disabled in your BIOS settings.
-
-### I get stuck on gIOScreenLockState 3, how can I fix this?
-
-Ensure you have VRAM size larger or equal to 512MiB. Recommended VRAM size is 1GiB or larger. (Use a tool like Smokeless-UMAF if there's no option, or options are lacking).
+In conclusion, this kext is (currently) exclusive to macOS 11 (Big Sur) since there are too many incompatibilities with other major macOS versions.
