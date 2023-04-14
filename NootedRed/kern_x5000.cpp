@@ -23,12 +23,9 @@ bool X5000::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
     if (kextRadeonX5000.loadIndex == index) {
         NRed::callback->setRMMIOIfNecessary();
 
-        uint32_t *orgChannelTypes = nullptr;
-
         KernelPatcher::SolveRequest solveRequests[] = {
             {"__ZN31AMDRadeonX5000_AMDGFX9PM4EngineC1Ev", this->orgGFX9PM4EngineConstructor},
             {"__ZN32AMDRadeonX5000_AMDGFX9SDMAEngineC1Ev", this->orgGFX9SDMAEngineConstructor},
-            {"__ZZN37AMDRadeonX5000_AMDGraphicsAccelerator19createAccelChannelsEbE12channelTypes", orgChannelTypes},
             {"__ZN39AMDRadeonX5000_AMDAccelSharedUserClient5startEP9IOService", this->orgAccelSharedUCStart},
             {"__ZN39AMDRadeonX5000_AMDAccelSharedUserClient4stopEP9IOService", this->orgAccelSharedUCStop},
             {"__ZN35AMDRadeonX5000_AMDAccelVideoContext10gMetaClassE", NRed::callback->metaClassMap[0][0]},
@@ -39,6 +36,16 @@ bool X5000::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
                 this->orgSetupAndInitializeHWCapabilities},
         };
         PANIC_COND(!patcher.solveMultiple(index, solveRequests, address, size), "x5000", "Failed to resolve symbols");
+
+        uint32_t *orgChannelTypes = patcher.solveSymbol<uint32_t *>(index,
+            "__ZZN37AMDRadeonX5000_AMDGraphicsAccelerator19createAccelChannelsEbE12channelTypes", address, size);
+        if (!orgChannelTypes) {
+            size_t offset = 0;
+            PANIC_COND(!patcher.findPattern(kChannelTypesOriginal, nullptr, arrsize(kChannelTypesOriginal),
+                           reinterpret_cast<void *>(address), size, &offset),
+                "x5000", "Failed to find createAccelChannels::channelTypes");
+            orgChannelTypes = reinterpret_cast<uint32_t *>(address + offset);
+        }
 
         KernelPatcher::RouteRequest requests[] = {
             {"__ZN32AMDRadeonX5000_AMDVega10Hardware17allocateHWEnginesEv", wrapAllocateHWEngines},
@@ -61,8 +68,14 @@ bool X5000::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t 
 
         PANIC_COND(MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS, "x5000",
             "Failed to enable kernel writing");
-        orgChannelTypes[5] = 1;     // Fix createAccelChannels so that it only starts SDMA0
-        orgChannelTypes[11] = 0;    // Fix getPagingChannel so that it gets SDMA0
+        orgChannelTypes[5] = 1;    // Fix createAccelChannels so that it only starts SDMA0
+        // Fix getPagingChannel so that it gets SDMA0
+        auto &idx11 = orgChannelTypes[11];
+        if (idx11 == 1) {
+            idx11 = 0;
+        } else {
+            orgChannelTypes[12] = 0;
+        }
         MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
         DBGLOG("x5000", "Applied SDMA1 patches");
 
